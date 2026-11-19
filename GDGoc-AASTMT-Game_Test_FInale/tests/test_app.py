@@ -13,7 +13,9 @@ from app.storage import JsonStore
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "store", JsonStore(tmp_path / "leaderboard.json"))
+    # Use an isolated SQLite DB for every test run
+    store = JsonStore(tmp_path / "leaderboard.db")
+    monkeypatch.setattr(main, "store", store)
     with TestClient(main.app) as test_client:
         yield test_client
 
@@ -114,12 +116,15 @@ def test_first_quiz_score_is_kept_and_leaderboard_updates(client: TestClient):
     assert row["quiz_scores"]["1"]["score_points"] == 1
 
 
-def test_concurrent_json_updates_keep_all_students(tmp_path):
-    store = JsonStore(tmp_path / "leaderboard.json")
+def test_concurrent_writes_keep_all_students(tmp_path):
+    """Concurrent writes to the same SQLite DB must not lose any student."""
+    store = JsonStore(tmp_path / "concurrent.db")
     ids = [str(uuid.uuid4()) for _ in range(12)]
 
     def add(student_id: str) -> None:
-        store.update(lambda data: data["students"].__setitem__(student_id, {"name": student_id, "quizzes": {}, "progress": {}}))
+        store.update(lambda data: data["students"].__setitem__(
+            student_id, {"name": student_id, "quizzes": {}, "progress": {}}
+        ))
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(add, ids))
@@ -146,3 +151,31 @@ def test_route_manifest_is_served_as_json(client: TestClient):
     response = client.get("/manus-routes.json")
     assert response.status_code == 200
     assert response.json() == {"routes": [{"path": "/", "title": "Python From Zero — GDGoC AASTMT"}]}
+
+
+def test_first_score_anti_farming_at_db_level(tmp_path):
+    """ON CONFLICT DO NOTHING means a second submit can never raise the score."""
+    store = JsonStore(tmp_path / "farming.db")
+    student_id = str(uuid.uuid4())
+
+    # First submission: 5 points
+    store.update(lambda data: (
+        data["students"].__setitem__(student_id, {"name": "Farmer", "quizzes": {}, "progress": {}}),
+        data["students"][student_id]["quizzes"].__setitem__("1", {
+            "score_points": 5, "possible_points": 40, "solved": 3,
+            "question_count": 20, "completed_at": "2026-01-01T00:00:00+00:00",
+            "results": [],
+        }),
+    ))
+
+    # Second submission: attempt to raise score to 40
+    store.update(lambda data: (
+        data["students"][student_id]["quizzes"].__setitem__("1", {
+            "score_points": 40, "possible_points": 40, "solved": 20,
+            "question_count": 20, "completed_at": "2026-01-01T00:01:00+00:00",
+            "results": [],
+        }),
+    ))
+
+    final = store.read()
+    assert final["students"][student_id]["quizzes"]["1"]["score_points"] == 5
