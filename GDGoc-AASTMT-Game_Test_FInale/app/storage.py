@@ -27,8 +27,13 @@ T = TypeVar("T")
 def _nullctx():
     yield
 
+DEFAULT_DATABASE_URL = (
+    "postgresql://platform_user.iaujdszxrgmvfjrwokhy:GdgocAASTMT2026_SecurePass!@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=require"
+)
+
+
 def _get_engine():
-    raw_url = os.environ.get("DATABASE_URL", "")
+    raw_url = os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
     if raw_url:
         # Convert legacy postgres:// scheme
         if raw_url.startswith("postgres://"):
